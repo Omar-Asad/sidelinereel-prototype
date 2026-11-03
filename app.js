@@ -2,7 +2,7 @@
 // Implements spec rules R-01 (confusable pairs), R-02 (routing), R-07 (cut-off),
 // R-08 (thumbnail) and R-09 ("Not my kid") on fictional data.
 
-const KEY = "sidelinereel-confirm-v1";
+const KEY = "sidelinereel-confirm-v2";
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -72,6 +72,7 @@ function toast(msg) {
 }
 function act(msg, fn) { fn(); save(); log(msg); toast(msg); render(); }
 
+const uniq = (a) => [...new Set(a)];
 const pill = (c) => (c >= 0.85 ? "ok" : c >= 0.6 ? "warn" : "bad");
 const thumb = (c, blur) => `<div class="thumb">${blur ? "#?" : esc(c.kind)}</div>`;
 
@@ -94,27 +95,42 @@ const SCREENS = {
         ${q.length ? "" : `<div class="card">Nothing waiting. Every clip is in the right reel.</div>`}
         ${q.map((c) => {
           const guess = player(c.match);
-          const cands = c.reported ? S.players : [guess, ...partners(S, c.match)];
+          const from = player(c.reportedFrom);
+          const confident = c.confidence >= S.threshold;
+          // Model's best two first (minus the kid whose family rejected it); full roster on request.
+          const top = uniq([c.reported ? null : c.match, c.alt, ...partners(S, c.reportedFrom || c.match).map((p) => p.id)])
+            .filter((id) => id && id !== c.reportedFrom).slice(0, 2);
+          const rest = S.players.map((p) => p.id).filter((id) => !top.includes(id) && id !== c.reportedFrom);
+          const btn = (id) => `<button data-act="assign" data-id="${c.id}" data-p="${id}">${esc(label(player(id)))}</button>`;
           return `
-            <div class="card">
+            <div class="card ${c.reported ? "reported" : ""}">
               <div class="row">
                 ${thumb(c, true)}
                 <div style="flex:1">
                   <strong>Who is this? ${esc(c.kind)} at ${c.at}</strong>
-                  <div class="muted">${c.reported ? "A parent tapped “Not my kid”" : `Model guessed ${esc(label(guess))}`} <span class="pill ${pill(c.confidence)}">${Math.round(c.confidence * 100)}% match</span></div>
+                  <div class="muted">Model tagged ${esc(label(guess))} <span class="pill ${pill(c.confidence)}">${Math.round(c.confidence * 100)}% match</span></div>
+                  ${c.reported ? `<div class="flag">${esc(from.name)}'s family tapped “Not my kid”${confident ? ` · <strong>Confident but reported</strong>: feeds threshold tuning` : ""}</div>` : ""}
                 </div>
               </div>
               <div class="choices">
-                ${cands.map((p) => `<button data-act="assign" data-id="${c.id}" data-p="${p.id}">${esc(label(p))}</button>`).join("")}
+                ${top.map(btn).join("")}
+                ${c.expanded ? rest.map(btn).join("") : `<button class="ghost" data-act="expand" data-id="${c.id}">Someone else…</button>`}
+                ${c.reported ? `<button class="ghost" data-act="assign" data-id="${c.id}" data-p="${c.reportedFrom}">Keep with ${esc(from.name)}</button>` : ""}
                 <button class="ghost" data-act="neither" data-id="${c.id}">Neither</button>
               </div>
             </div>`;
         }).join("")}`;
     },
     on: {
-      assign: (id, p) => act(`Coach assigned clip ${id} to ${label(player(p))}`, () => {
-        Object.assign(clip(id), { status: "confirmed", assigned: p });
-      }),
+      assign: (id, p) => {
+        const c = clip(id), who = player(p);
+        const moved = c.reported && p !== c.reportedFrom;
+        act(moved ? `Re-tagged to ${label(who)}: added to ${who.name}'s reel, family notified`
+                  : `Coach assigned clip ${id} to ${label(who)}`, () => {
+          Object.assign(c, { status: "confirmed", assigned: p, notified: moved });
+        });
+      },
+      expand: (id) => { clip(id).expanded = true; save(); render(); },
       neither: (id) => act(`Coach marked clip ${id} as neither`, () => {
         Object.assign(clip(id), { status: "neither", assigned: null });
       })
@@ -141,14 +157,15 @@ const SCREENS = {
         ${mine.map((c) => `
           <div class="card row">
             ${thumb(c)}
-            <div style="flex:1"><strong>${esc(c.kind)}</strong><div class="muted">${c.at} · ${c.status === "confirmed" ? "confirmed by coach" : "auto-tagged"}</div></div>
+            <div style="flex:1"><strong>${esc(c.kind)}</strong>${c.notified ? ` <span class="pill ok">New: re-tagged by coach</span>` : ""}<div class="muted">${c.at} · ${c.status === "confirmed" ? "confirmed by coach" : "auto-tagged"}</div></div>
             <button class="bad" data-act="notmine" data-id="${c.id}">Not my kid</button>
           </div>`).join("")}
         ${mine.length ? "" : `<div class="card muted">No clips yet this week.</div>`}`;
     },
     on: {
       notmine: (id) => act(`Parent reported clip ${id}: “Not my kid”. Back to the coach.`, () => {
-        Object.assign(clip(id), { status: "queued", assigned: null, reported: true });
+        const c = clip(id);
+        Object.assign(c, { status: "queued", reportedFrom: c.assigned, assigned: null, reported: true, expanded: false });
         S.reports += 1;
       })
     }
@@ -169,6 +186,8 @@ const SCREENS = {
           ${stat(count("confirmed"), "coach-confirmed")}
           ${stat(count("held"), "held at cut-off")}
           ${stat(S.reports, "“Not my kid”")}
+          ${stat(S.clips.filter((c) => c.reported && c.confidence >= S.threshold).length, "confident but reported")}
+          ${stat(S.clips.filter((c) => c.notified).length, "re-tagged, family notified")}
           ${stat(rate, "wrong-kid per 1,000 delivered")}
         </div>
         <div class="row" style="margin:10px 0">

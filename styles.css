@@ -37,3 +37,5 @@ button:disabled { opacity: .45; cursor: default; }
 .choices { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .choices button { padding: 8px 14px; }
 select { font: inherit; padding: 2px 6px; }
+.card.reported { border-color: #f0c36d; }
+.flag { margin-top: 4px; font-size: 13px; color: var(--warn); }
